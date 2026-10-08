@@ -7,6 +7,13 @@
     <UserSecretsId>67411368-8227-410e-bde9-4419f328cf3f</UserSecretsId>
   </PropertyGroup>
 
+  <!-- The test project lives under tests/ and builds separately -->
+  <ItemGroup>
+    <Compile Remove="tests/**" />
+    <Content Remove="tests/**" />
+    <None Remove="tests/**" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.10" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">

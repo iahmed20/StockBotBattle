@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -26,7 +25,7 @@ public class StrategyController : ControllerBase
         public string? Note { get; set; } // optional "what I changed"
     }
 
-    private int AccountId => int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+    private int AccountId => User.AccountId();
     private string OwnerId => AccountId.ToString();
 
     // The editor works on one strategy per account: the most recently created one that isn't deleted

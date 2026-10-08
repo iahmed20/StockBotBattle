@@ -1,30 +1,55 @@
 // Controllers/OrdersController.cs
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Query.SqlExpressions;
 
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public class OrdersController : ControllerBase
 {
     private readonly BrokerageContext _db;
     private readonly MatchingEngine _matchingEngine;
+
     public OrdersController(BrokerageContext db, MatchingEngine matchingEngine)
     {
         _db = db;
         _matchingEngine = matchingEngine;
     }
 
-    // GET /api/orders
+    // GET /api/orders?status=OPEN
+    // The signed-in account's orders, newest first
     [HttpGet]
-    public async Task<IActionResult> ListOrders()
-    {   
-        var orders = await _db.Orders.ToListAsync();
+    public async Task<IActionResult> ListOrders([FromQuery] string? status = null, [FromQuery] int limit = 100)
+    {
+        limit = Math.Clamp(limit, 1, 1000);
+        var query = _db.Orders.Where(o => o.AccountId == User.AccountId());
+        if (!string.IsNullOrWhiteSpace(status))
+            query = query.Where(o => o.Status == status.ToUpper());
+
+        var orders = await query.OrderByDescending(o => o.OrderId).Take(limit).ToListAsync();
         return Ok(orders);
     }
+
+    // GET /api/orders/5
+    // One order and its fills
+    [HttpGet("{id:long}")]
+    public async Task<IActionResult> GetOrder(long id)
+    {
+        var order = await _db.Orders.FirstOrDefaultAsync(o => o.OrderId == id && o.AccountId == User.AccountId());
+        if (order == null) return NotFound();
+
+        var executions = await _db.Executions
+            .Where(e => e.OrderId == id)
+            .OrderBy(e => e.ExecutionId)
+            .Select(e => new { e.ExecutionId, e.Price, e.Quantity, e.ExecutedAt, Counterparty = e.CounterOrderId == null ? "HOUSE" : "ORDER" })
+            .ToListAsync();
+
+        return Ok(new { order, executions });
+    }
+
     public class SubmitOrderRequest
     {
-        public int AccountId { get; set; }
         public string Symbol { get; set; } = "";
         public string Side { get; set; } = "";
         public string OrderType { get; set; } = "";
@@ -32,41 +57,34 @@ public class OrdersController : ControllerBase
         public decimal Quantity { get; set; }
     }
 
+    // POST /api/orders
+    // Places an order for the signed-in account. 422 with the saved order if it was rejected.
     [HttpPost]
     public async Task<IActionResult> SubmitOrder([FromBody] SubmitOrderRequest request)
     {
-      if(request.Quantity < 0)
+        Order order;
+        try
         {
-            return BadRequest("Order Quantity must be positive, nyaa.");
+            order = await _matchingEngine.PlaceOrder(User.AccountId(),
+                new PlaceOrderRequest(request.Symbol, request.Side, request.OrderType, request.LimitPrice, request.Quantity));
+        }
+        catch (OrderValidationException ex)
+        {
+            return BadRequest(ex.Message);
         }
 
-        var order = new Order
-        {
-            AccountId = request.AccountId,
-            Symbol = request.Symbol,
-            Side = request.Side,
-            OrderType = request.OrderType,
-            LimitPrice = request.LimitPrice,
-            Quantity = request.Quantity
-        };
-
-        _db.Orders.Add(order);
-        await _db.SaveChangesAsync(); // save first so order.OrderId gets generated
-
-        var result = await _matchingEngine.ExecuteMarketOrder(order);
-
-        return Ok(result);
+        return order.Status == OrderStatus.Rejected ? UnprocessableEntity(order) : Ok(order);
     }
 
-    // [HttpPost("{id}")]
-    // public async Task<IActionResult> MatchEngine(int id)
-    // {
-    //    var order = await _db.Orders.FindAsync(id);
-    //    if (order == null) return NotFound();
-    //    var match = await _matchingEngine.ExecuteMarketOrder(order);
-    //    return Ok(match);
-
-    // }
-   
-    
+    // DELETE /api/orders/5
+    // Cancels the unfilled part of a working order
+    [HttpDelete("{id:long}")]
+    public async Task<IActionResult> CancelOrder(long id)
+    {
+        var (order, cancelled) = await _matchingEngine.CancelOrder(User.AccountId(), id);
+        if (order == null) return NotFound();
+        if (!cancelled)
+            return Conflict($"Order {id} is {order.Status} and can no longer be cancelled.");
+        return Ok(order);
+    }
 }

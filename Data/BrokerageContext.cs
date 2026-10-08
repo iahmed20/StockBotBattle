@@ -49,6 +49,9 @@ public class BrokerageContext : DbContext
         modelBuilder.Entity<StrategySubmission>(e =>
         {
             e.HasIndex(s => s.AccountId);
+            e.HasIndex(s => s.Status);
+            e.Property(s => s.Status).HasMaxLength(16);
+            e.Property(s => s.Error).HasMaxLength(2000);
             e.HasOne(s => s.Version)
                 .WithMany()
                 .HasForeignKey(s => new { s.StrategyId, s.StrategyVersion })
@@ -57,6 +60,23 @@ public class BrokerageContext : DbContext
 
         modelBuilder.Entity<LedgerEntry>()
             .Property(l => l.Amount).HasColumnType("decimal(18,4)");
+
+        modelBuilder.Entity<Order>(e =>
+        {
+            e.Property(o => o.StatusReason).HasMaxLength(500);
+            e.HasIndex(o => new { o.Symbol, o.Status }); // the working order book for a symbol
+            e.HasIndex(o => o.AccountId);
+            e.HasIndex(o => o.StrategySubmissionId);
+        });
+
+        modelBuilder.Entity<Execution>(e =>
+        {
+            e.HasIndex(x => x.OrderId);
+            e.HasIndex(x => x.PriceTickId); // house depth used at a tick
+        });
+
+        modelBuilder.Entity<PriceTick>()
+            .HasIndex(p => new { p.Symbol, p.PriceTickId });
 
         modelBuilder.Entity<Order>()
             .Property(o => o.Quantity).HasColumnType("decimal(18,4)");

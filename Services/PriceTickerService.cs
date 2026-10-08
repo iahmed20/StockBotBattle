@@ -4,14 +4,16 @@ using Microsoft.EntityFrameworkCore;
 public class PriceTickerService : BackgroundService
 {
     private readonly IServiceProvider _services;
+    private readonly ILogger<PriceTickerService> _logger;
     private readonly Random _random = new();
 
     // Each tick simulates one trading day, so annualized drift/volatility apply with dt = 1/252
     private const double Dt = 1.0 / 252.0;
 
-    public PriceTickerService(IServiceProvider services)
+    public PriceTickerService(IServiceProvider services, ILogger<PriceTickerService> logger)
     {
         _services = services;
+        _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -44,6 +46,20 @@ public class PriceTickerService : BackgroundService
                 }
 
                 await db.SaveChangesAsync();
+
+                // Resting limit orders that the new prices cross fill against the house
+                foreach (var security in securities)
+                {
+                    using var matchScope = _services.CreateScope();
+                    try
+                    {
+                        await matchScope.ServiceProvider.GetRequiredService<MatchingEngine>().MatchRestingOrders(security.Symbol);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Matching resting orders for {Symbol} failed", security.Symbol);
+                    }
+                }
             }
 
             await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);

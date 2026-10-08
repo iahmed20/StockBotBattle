@@ -9,12 +9,13 @@ var connectionString = builder.Configuration.GetConnectionString("Brokerage")
 
 builder.Services.AddDbContext<BrokerageContext>(options =>
     options.UseNpgsql(connectionString));
-    
+
 builder.Services.AddControllers();
 builder.Services.AddHostedService<PriceTickerService>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddScoped<MatchingEngine>();
+builder.Services.AddSingleton(builder.Configuration.GetSection("Market").Get<MarketOptions>() ?? new MarketOptions());
 
 // Magic-link email: real SMTP when Email:Smtp:Host is set, otherwise the link is written to the log
 var smtpOptions = builder.Configuration.GetSection("Email:Smtp").Get<SmtpOptions>();
@@ -61,7 +62,6 @@ builder.Services.AddCors(options =>
                       });
 });
 
-builder.Services.AddControllers();
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
@@ -115,3 +115,5 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.Run();
+
+public partial class Program { } // lets integration tests reference the app
