@@ -5,7 +5,8 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 
-// Runs queued strategy submissions, one sandbox per submission and at most one per account.
+// Runs queued strategy submissions, one sandbox per submission and at most one per trading
+// account (a player's own account, or their account in a competition round).
 // Every price tick, each running strategy gets a snapshot of the market and its account and
 // answers with orders, which go through the MatchingEngine like orders from the API.
 public class StrategyRunnerService : BackgroundService
@@ -26,9 +27,12 @@ public class StrategyRunnerService : BackgroundService
     private sealed class Run
     {
         public required int SubmissionId { get; init; }
-        public required int AccountId { get; init; }
+        public required int AccountId { get; init; }        // the owner
+        public required int TradingAccountId { get; init; } // whose cash and orders the bot uses
+        public int? RoundId { get; init; }
         public CancellationTokenSource Cancel { get; } = new();
         public string? StopReason { get; set; }
+        public string StopStatus { get; set; } = SubmissionStatus.Stopped;
         public Task Task { get; set; } = Task.CompletedTask;
     }
 
@@ -97,6 +101,19 @@ public class StrategyRunnerService : BackgroundService
                 .SetProperty(s => s.FinishedAt, DateTime.UtcNow)) > 0;
     }
 
+    // Ends the bots trading for these accounts as COMPLETED, e.g. when their round finishes
+    public async Task EndRunsAsync(IReadOnlyCollection<int> tradingAccountIds, string reason)
+    {
+        var ending = _runs.Values.Where(r => tradingAccountIds.Contains(r.TradingAccountId)).ToList();
+        foreach (var run in ending)
+        {
+            run.StopReason = reason;
+            run.StopStatus = SubmissionStatus.Completed;
+            run.Cancel.Cancel();
+        }
+        await Task.WhenAll(ending.Select(r => r.Task));
+    }
+
     // Submissions marked RUNNING by a previous process (crash or restart) go back in the queue
     private async Task RecoverAsync()
     {
@@ -119,15 +136,32 @@ public class StrategyRunnerService : BackgroundService
             .OrderBy(s => s.StrategySubmissionId)
             .ToListAsync();
 
-        foreach (var forAccount in queued.GroupBy(s => s.AccountId))
+        // Bots for round accounts only start once their round is ACTIVE
+        var tradingIds = queued.Select(s => s.TradesFor).Distinct().ToList();
+        var rounds = await db.Accounts
+            .Where(a => tradingIds.Contains(a.AccountId) && a.RoundId != null)
+            .Join(db.Rounds, a => a.RoundId, r => r.RoundId, (a, r) => new { a.AccountId, r.RoundId, r.Status })
+            .ToDictionaryAsync(x => x.AccountId);
+
+        foreach (var forAccount in queued.GroupBy(s => s.TradesFor))
         {
-            // Only the newest submission per account runs; it replaces anything older
+            // Only the newest submission per trading account runs; it replaces anything older
             var latest = forAccount.Last();
             var reason = $"Replaced by submission #{latest.StrategySubmissionId}.";
 
             foreach (var older in forAccount.SkipLast(1))
                 await StopAsync(older.StrategySubmissionId, older.AccountId, reason);
-            foreach (var running in _runs.Values.Where(r => r.AccountId == latest.AccountId).ToList())
+
+            var round = rounds.GetValueOrDefault(forAccount.Key);
+            if (round?.Status == RoundStatus.Finished)
+            {
+                await StopAsync(latest.StrategySubmissionId, latest.AccountId, $"Round #{round.RoundId} ended.");
+                continue;
+            }
+            if (round?.Status == RoundStatus.Upcoming)
+                continue; // stays queued until the round starts
+
+            foreach (var running in _runs.Values.Where(r => r.TradingAccountId == latest.TradesFor).ToList())
                 await StopAsync(running.SubmissionId, running.AccountId, reason);
 
             if (_runs.Count >= _options.MaxConcurrentRuns)
@@ -138,6 +172,8 @@ public class StrategyRunnerService : BackgroundService
                 .ExecuteUpdateAsync(u => u
                     .SetProperty(s => s.Status, SubmissionStatus.Running)
                     .SetProperty(s => s.StartedAt, DateTime.UtcNow)
+                    .SetProperty(s => s.TicksProcessed, 0)
+                    .SetProperty(s => s.LastTickAt, (DateTime?)null)
                     .SetProperty(s => s.FinishedAt, (DateTime?)null)
                     .SetProperty(s => s.Error, (string?)null));
             if (claimed == 0) continue; // stopped by its owner in the meantime
@@ -147,7 +183,13 @@ public class StrategyRunnerService : BackgroundService
                 .Select(v => v.Code)
                 .SingleAsync();
 
-            var run = new Run { SubmissionId = latest.StrategySubmissionId, AccountId = latest.AccountId };
+            var run = new Run
+            {
+                SubmissionId = latest.StrategySubmissionId,
+                AccountId = latest.AccountId,
+                TradingAccountId = latest.TradesFor,
+                RoundId = round?.RoundId,
+            };
             _runs[run.SubmissionId] = run;
             run.Task = Task.Run(() => RunAsync(run, code));
         }
@@ -184,8 +226,10 @@ public class StrategyRunnerService : BackgroundService
             while (true)
             {
                 await _ticks.WaitForTickAsync(stop.Token);
+                if (run.RoundId != null && await RoundFinished(run.RoundId.Value))
+                    throw new RoundEndedException(run.RoundId.Value);
 
-                var state = await BuildState(run.AccountId, lastResults);
+                var state = await BuildState(run.TradingAccountId, lastResults);
                 await Send(process, new { type = "tick", state });
                 var reply = await Receive(process, reader, _options.TickTimeoutSeconds, "on_tick", stderr, stop.Token);
                 if (reply.Type != "orders")
@@ -193,7 +237,7 @@ public class StrategyRunnerService : BackgroundService
 
                 AppendLog(log, reply.Logs, state.Timestamp);
                 lastResults = await PlaceOrders(run, reply.Orders ?? new(), log);
-                await SaveLog(run.SubmissionId, log);
+                await SaveProgress(run.SubmissionId, log);
             }
         }
         catch (OperationCanceledException) when (timeLimit.IsCancellationRequested && !run.Cancel.IsCancellationRequested)
@@ -204,8 +248,13 @@ public class StrategyRunnerService : BackgroundService
         catch (OperationCanceledException) when (run.Cancel.IsCancellationRequested)
         {
             // No reason means the API is shutting down: requeue so the run resumes on restart
-            status = run.StopReason == null ? SubmissionStatus.Queued : SubmissionStatus.Stopped;
+            status = run.StopReason == null ? SubmissionStatus.Queued : run.StopStatus;
             error = run.StopReason;
+        }
+        catch (RoundEndedException ex)
+        {
+            status = SubmissionStatus.Completed;
+            error = $"Round #{ex.RoundId} ended.";
         }
         catch (SandboxException ex)
         {
@@ -318,7 +367,7 @@ public class StrategyRunnerService : BackgroundService
             var engine = scope.ServiceProvider.GetRequiredService<MatchingEngine>();
             try
             {
-                var order = await engine.PlaceOrder(run.AccountId,
+                var order = await engine.PlaceOrder(run.TradingAccountId,
                     new PlaceOrderRequest(o.Symbol ?? "", o.Side ?? "", o.OrderType ?? "", o.LimitPrice, o.Quantity),
                     run.SubmissionId);
                 results.Add(new OrderResult(order.OrderId, order.Symbol, order.Side, order.Status, order.QuantityFilled, order.StatusReason));
@@ -331,14 +380,31 @@ public class StrategyRunnerService : BackgroundService
         return results;
     }
 
-    private async Task SaveLog(int submissionId, StringBuilder log)
+    // Called after every tick, so the editor can show the bot is alive even when it prints nothing
+    private async Task<bool> RoundFinished(int roundId)
+    {
+        using var scope = _scopes.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BrokerageContext>();
+        return await db.Rounds.AnyAsync(r => r.RoundId == roundId && r.Status == RoundStatus.Finished);
+    }
+
+    private sealed class RoundEndedException(int roundId) : Exception
+    {
+        public int RoundId { get; } = roundId;
+    }
+
+    private async Task SaveProgress(int submissionId, StringBuilder log)
     {
         using var scope = _scopes.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<BrokerageContext>();
         var text = log.ToString();
+        var now = DateTime.UtcNow;
         await db.StrategySubmissions
             .Where(s => s.StrategySubmissionId == submissionId)
-            .ExecuteUpdateAsync(u => u.SetProperty(s => s.Log, text));
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(s => s.Log, text)
+                .SetProperty(s => s.TicksProcessed, s => s.TicksProcessed + 1)
+                .SetProperty(s => s.LastTickAt, now));
     }
 
     private static void AppendLog(StringBuilder log, string? text, string? timestamp)

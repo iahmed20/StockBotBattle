@@ -24,6 +24,11 @@ builder.Services.AddSingleton<ISandboxLauncher, DockerSandboxLauncher>();
 builder.Services.AddSingleton<StrategyRunnerService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<StrategyRunnerService>());
 
+// Competition rounds, run back to back
+builder.Services.AddSingleton(builder.Configuration.GetSection("Rounds").Get<RoundOptions>() ?? new RoundOptions());
+builder.Services.AddSingleton<RoundService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<RoundService>());
+
 // Magic-link email: real SMTP when Email:Smtp:Host is set, otherwise the link is written to the log
 var smtpOptions = builder.Configuration.GetSection("Email:Smtp").Get<SmtpOptions>();
 if (!string.IsNullOrWhiteSpace(smtpOptions?.Host))

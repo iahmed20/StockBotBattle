@@ -27,6 +27,11 @@ public class StrategyController : ControllerBase
         public string? Note { get; set; } // optional "what I changed"
     }
 
+    public class SubmitRequest : CodeRequest
+    {
+        public int? RoundId { get; set; } // run the bot in this round instead of the open market
+    }
+
     private int AccountId => User.AccountId();
     private string OwnerId => AccountId.ToString();
 
@@ -48,7 +53,7 @@ public class StrategyController : ControllerBase
         var lastSubmission = await _db.StrategySubmissions
             .Where(s => s.AccountId == AccountId)
             .OrderByDescending(s => s.StrategySubmissionId)
-            .Select(s => new { s.StrategySubmissionId, s.StrategyVersion, s.Status, s.SubmittedAt, s.StartedAt, s.FinishedAt, s.Error })
+            .Select(s => new { s.StrategySubmissionId, s.StrategyVersion, s.RoundId, s.Status, s.SubmittedAt, s.StartedAt, s.FinishedAt, s.TicksProcessed, s.LastTickAt, s.Error })
             .FirstOrDefaultAsync();
 
         return Ok(new
@@ -116,17 +121,31 @@ public class StrategyController : ControllerBase
     // Saves the code, then queues that exact version for the sandbox runner; it replaces
     // any submission of this account that is already running
     [HttpPost("submit")]
-    public async Task<IActionResult> SubmitStrategy([FromBody] CodeRequest request)
+    public async Task<IActionResult> SubmitStrategy([FromBody] SubmitRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Code))
             return BadRequest("Cannot submit an empty strategy.");
         var error = Validate(request);
         if (error != null) return BadRequest(error);
 
+        int? tradingAccountId = null;
+        if (request.RoundId is int roundId)
+        {
+            var entry = await _db.RoundEntries
+                .Where(e => e.RoundId == roundId && e.AccountId == AccountId)
+                .Select(e => new { e.TradingAccountId, e.Round!.Status })
+                .FirstOrDefaultAsync();
+            if (entry == null) return BadRequest($"Join round #{roundId} before submitting a bot to it.");
+            if (entry.Status == RoundStatus.Finished) return Conflict($"Round #{roundId} has ended.");
+            tradingAccountId = entry.TradingAccountId;
+        }
+
         var (strategy, version, _) = await SaveVersion(request);
         var submission = new StrategySubmission
         {
             AccountId = AccountId,
+            TradingAccountId = tradingAccountId,
+            RoundId = request.RoundId,
             StrategyId = strategy.Id,
             StrategyVersion = version.Version
         };
@@ -145,6 +164,7 @@ public class StrategyController : ControllerBase
             AccountId = AccountId,
             Action = "STRATEGY_SUBMITTED",
             Detail = $"Submitted strategy #{submission.StrategySubmissionId} ({strategy.Name} v{version.Version})"
+                + (request.RoundId == null ? "" : $" to round #{request.RoundId}")
         });
         await _db.SaveChangesAsync();
 
@@ -155,6 +175,7 @@ public class StrategyController : ControllerBase
             updatedAt = version.CreatedAt,
             submission.StrategySubmissionId,
             submission.StrategyVersion,
+            submission.RoundId,
             submission.Status,
             submission.SubmittedAt
         });
@@ -169,7 +190,7 @@ public class StrategyController : ControllerBase
             .Where(s => s.AccountId == AccountId)
             .OrderByDescending(s => s.StrategySubmissionId)
             .Take(50)
-            .Select(s => new { s.StrategySubmissionId, s.StrategyVersion, s.Status, s.SubmittedAt, s.StartedAt, s.FinishedAt, s.Error })
+            .Select(s => new { s.StrategySubmissionId, s.StrategyVersion, s.RoundId, s.Status, s.SubmittedAt, s.StartedAt, s.FinishedAt, s.TicksProcessed, s.LastTickAt, s.Error })
             .ToListAsync();
         return Ok(submissions);
     }
@@ -181,7 +202,7 @@ public class StrategyController : ControllerBase
     {
         var submission = await _db.StrategySubmissions
             .Where(s => s.StrategySubmissionId == id && s.AccountId == AccountId)
-            .Select(s => new { s.StrategySubmissionId, s.StrategyVersion, s.Status, s.SubmittedAt, s.StartedAt, s.FinishedAt, s.Error, s.Log })
+            .Select(s => new { s.StrategySubmissionId, s.StrategyVersion, s.RoundId, s.Status, s.SubmittedAt, s.StartedAt, s.FinishedAt, s.TicksProcessed, s.LastTickAt, s.Error, s.Log })
             .FirstOrDefaultAsync();
         if (submission == null) return NotFound();
 

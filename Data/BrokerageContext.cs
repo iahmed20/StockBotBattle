@@ -16,6 +16,8 @@ public class BrokerageContext : DbContext
     public DbSet<Strategy> Strategies => Set<Strategy>();
     public DbSet<StrategyVersion> StrategyVersions => Set<StrategyVersion>();
     public DbSet<StrategySubmission> StrategySubmissions => Set<StrategySubmission>();
+    public DbSet<Round> Rounds => Set<Round>();
+    public DbSet<RoundEntry> RoundEntries => Set<RoundEntry>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -58,13 +60,31 @@ public class BrokerageContext : DbContext
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
+        modelBuilder.Entity<StrategySubmission>()
+            .Ignore(s => s.TradesFor);
+
+        modelBuilder.Entity<Round>(e =>
+        {
+            e.Property(r => r.Status).HasMaxLength(16);
+            e.Property(r => r.StartingCash).HasColumnType("decimal(18,4)");
+            e.HasIndex(r => r.Status);
+        });
+
+        modelBuilder.Entity<RoundEntry>(e =>
+        {
+            e.HasIndex(x => new { x.RoundId, x.AccountId }).IsUnique(); // one entry per player per round
+            e.HasIndex(x => x.TradingAccountId).IsUnique();
+            e.Property(x => x.FinalEquity).HasColumnType("decimal(18,4)");
+            e.HasOne(x => x.Round).WithMany(r => r.Entries).HasForeignKey(x => x.RoundId);
+        });
+
         modelBuilder.Entity<LedgerEntry>()
             .Property(l => l.Amount).HasColumnType("decimal(18,4)");
 
         modelBuilder.Entity<Order>(e =>
         {
             e.Property(o => o.StatusReason).HasMaxLength(500);
-            e.HasIndex(o => new { o.Symbol, o.Status }); // the working order book for a symbol
+            e.HasIndex(o => new { o.Symbol, o.Status }); // the working order books for a symbol
             e.HasIndex(o => o.AccountId);
             e.HasIndex(o => o.StrategySubmissionId);
         });

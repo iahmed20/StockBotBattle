@@ -12,6 +12,7 @@ public class Order
     public string Status { get; set; } = OrderStatus.Open;
     public string? StatusReason { get; set; }     // why an order was rejected or cancelled
     public int? StrategySubmissionId { get; set; } // set when a bot placed the order
+    public int? RoundId { get; set; }              // the round's order book; null for the open market
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public decimal RemainingQty => Quantity - QuantityFilled;
 }

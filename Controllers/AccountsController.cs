@@ -30,32 +30,14 @@ public class AccountsController : ControllerBase
         var account = await _db.Accounts.FindAsync(id);
         if (account == null) return NotFound();
 
-        var balances = await _matchingEngine.GetBalances(id);
-
-        var working = OrderStatus.Working;
-        var held = await _db.LedgerEntries
-            .Where(l => l.AccountId == id && l.EntryType == "POSITION")
-            .GroupBy(l => l.Symbol!)
-            .Select(g => new { Symbol = g.Key, Quantity = g.Sum(l => l.Amount) })
-            .ToListAsync();
-        var reserved = await _db.Orders
-            .Where(o => o.AccountId == id && o.Side == "SELL" && working.Contains(o.Status))
-            .GroupBy(o => o.Symbol)
-            .Select(g => new { Symbol = g.Key, Quantity = g.Sum(o => o.Quantity - o.QuantityFilled) })
-            .ToDictionaryAsync(x => x.Symbol, x => x.Quantity);
-
-        var positions = held
-            .Where(p => p.Quantity != 0)
-            .OrderBy(p => p.Symbol)
-            .Select(p => new { p.Symbol, p.Quantity, Available = p.Quantity - reserved.GetValueOrDefault(p.Symbol) });
-
+        var portfolio = await Portfolios.Load(_db, _matchingEngine, id);
         return Ok(new
         {
             account.AccountId,
             account.OwnerName,
-            CashBalance = balances.Cash,
-            AvailableCash = balances.AvailableCash,
-            Positions = positions
+            portfolio.CashBalance,
+            portfolio.AvailableCash,
+            portfolio.Positions
         });
     }
 

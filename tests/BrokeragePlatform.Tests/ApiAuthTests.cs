@@ -136,4 +136,40 @@ public class ApiAuthTests : IClassFixture<ApiAuthTests.Fixture>
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
+
+    [Fact]
+    public async Task Players_join_rounds_once_and_see_themselves_on_the_leaderboard()
+    {
+        int roundId;
+        await using (var db = _factory.Db.CreateContext())
+        {
+            var round = new Round { Status = RoundStatus.Upcoming, StartsAt = DateTime.UtcNow.AddMinutes(1), EndsAt = DateTime.UtcNow.AddMinutes(31), StartingCash = 100_000 };
+            db.Rounds.Add(round);
+            await db.SaveChangesAsync();
+            roundId = round.RoundId;
+        }
+        var (gina, _) = await _factory.SignIn("gina@example.com");
+        var (hank, _) = await _factory.SignIn("hank@example.com");
+
+        Assert.Equal(HttpStatusCode.BadRequest,
+            (await gina.PostAsJsonAsync("/api/strategy/submit", new { code = "def on_tick(s, p): pass", roundId })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await gina.PostAsync($"/api/rounds/{roundId}/join", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await gina.PostAsync($"/api/rounds/{roundId}/join", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK,
+            (await gina.PostAsJsonAsync("/api/strategy/submit", new { code = "def on_tick(s, p): pass", roundId })).StatusCode);
+
+        var view = await gina.GetFromJsonAsync<System.Text.Json.JsonElement>($"/api/rounds/{roundId}");
+        var row = Assert.Single(view.GetProperty("leaderboard").EnumerateArray());
+        Assert.True(row.GetProperty("isYou").GetBoolean());
+        Assert.Equal(100_000m, row.GetProperty("equity").GetDecimal());
+        Assert.Equal("QUEUED", row.GetProperty("botStatus").GetString());
+        Assert.Equal(100_000m, view.GetProperty("you").GetProperty("cashBalance").GetDecimal());
+
+        // Hank hasn't joined: he sees the board but has no round account
+        var hankView = await hank.GetFromJsonAsync<System.Text.Json.JsonElement>($"/api/rounds/{roundId}");
+        Assert.False(Assert.Single(hankView.GetProperty("leaderboard").EnumerateArray()).GetProperty("isYou").GetBoolean());
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, hankView.GetProperty("you").ValueKind);
+        var current = await hank.GetFromJsonAsync<System.Text.Json.JsonElement>("/api/rounds/current");
+        Assert.Equal(roundId, current.GetProperty("upcoming").GetProperty("roundId").GetInt32());
+    }
 }

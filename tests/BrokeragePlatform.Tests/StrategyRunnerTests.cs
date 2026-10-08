@@ -122,6 +122,8 @@ public class StrategyRunnerTests : IClassFixture<TestDatabase>, IAsyncLifetime
         Assert.Contains("result FILLED", submission.Log);
         Assert.Contains("Side must be BUY or SELL", submission.Log); // the malformed HOLD order
         Assert.Contains("cash 60", submission.Log);
+        Assert.True(submission.TicksProcessed >= 3);
+        Assert.NotNull(submission.LastTickAt);
     }
 
     [Fact]
@@ -198,5 +200,62 @@ public class StrategyRunnerTests : IClassFixture<TestDatabase>, IAsyncLifetime
         var submission = await Get(id);
         Assert.Equal(SubmissionStatus.Stopped, submission.Status);
         Assert.Equal("Stopped by user.", submission.Error);
+    }
+
+    [Fact]
+    public async Task Round_bot_waits_for_its_round_and_completes_when_it_ends()
+    {
+        var symbol = await _test.CreateSecurity(10m);
+        var player = await _test.CreateAccount(0m);
+        int roundId, tradingAccount, id;
+        await using (var db = _test.CreateContext())
+        {
+            var round = new Round { Status = RoundStatus.Upcoming, StartsAt = DateTime.UtcNow, EndsAt = DateTime.UtcNow.AddMinutes(30), StartingCash = 1000 };
+            db.Rounds.Add(round);
+            await db.SaveChangesAsync();
+            var account = new Account { OwnerName = "p", RoundId = round.RoundId };
+            db.Accounts.Add(account);
+            await db.SaveChangesAsync();
+            db.RoundEntries.Add(new RoundEntry { RoundId = round.RoundId, AccountId = player, TradingAccountId = account.AccountId });
+            db.LedgerEntries.Add(new LedgerEntry { AccountId = account.AccountId, EntryType = "CASH", Amount = 1000, ReferenceType = "ROUND_STAKE" });
+
+            var strategy = new Strategy { OwnerId = player.ToString(), Name = "r", CurrentVersion = 1 };
+            db.Strategies.Add(strategy);
+            db.StrategyVersions.Add(new StrategyVersion { StrategyId = strategy.Id, Version = 1, Code = $$"""
+                from datamodel import Order
+                def on_tick(symbol, price, state):
+                    if symbol == "{{symbol}}":
+                        return Order.buy(symbol, 1)
+                """ });
+            var submission = new StrategySubmission
+            {
+                AccountId = player, TradingAccountId = account.AccountId, RoundId = round.RoundId,
+                StrategyId = strategy.Id, StrategyVersion = 1,
+            };
+            db.StrategySubmissions.Add(submission);
+            await db.SaveChangesAsync();
+            (roundId, tradingAccount, id) = (round.RoundId, account.AccountId, submission.StrategySubmissionId);
+        }
+
+        // Upcoming: the runner leaves it queued
+        await Task.Delay(2500);
+        Assert.Equal(SubmissionStatus.Queued, (await Get(id)).Status);
+
+        await using (var db = _test.CreateContext())
+            await db.Rounds.Where(r => r.RoundId == roundId).ExecuteUpdateAsync(u => u.SetProperty(r => r.Status, RoundStatus.Active));
+        await Until(async () =>
+        {
+            await using var db = _test.CreateContext();
+            return await db.Orders.AnyAsync(o => o.StrategySubmissionId == id && o.Status == OrderStatus.Filled);
+        });
+
+        await using (var db = _test.CreateContext())
+        {
+            var order = await db.Orders.FirstAsync(o => o.StrategySubmissionId == id);
+            Assert.Equal((tradingAccount, (int?)roundId), (order.AccountId, order.RoundId)); // traded with the round account
+            await db.Rounds.Where(r => r.RoundId == roundId).ExecuteUpdateAsync(u => u.SetProperty(r => r.Status, RoundStatus.Finished));
+        }
+        await Until(async () => (await Get(id)).Status == SubmissionStatus.Completed);
+        Assert.Equal($"Round #{roundId} ended.", (await Get(id)).Error);
     }
 }

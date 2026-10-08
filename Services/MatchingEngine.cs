@@ -21,8 +21,10 @@ public record Balances(decimal Cash, decimal ReservedCash, decimal Position, dec
     public decimal AvailableShares => Position - ReservedShares;
 }
 
-// Order book plus a house market maker. The house quotes both sides at the latest tick price,
-// up to MarketOptions.HouseDepth shares per side per tick. Incoming orders take the best price
+// Order books plus a house market maker. The open market has one book per symbol, and each
+// competition round has its own, so round accounts only trade with each other and the house.
+// In every book the house quotes both sides at the latest tick price, up to
+// MarketOptions.HouseDepth shares per side per tick. Incoming orders take the best price
 // available across resting orders and the house (price-time priority); limit orders that aren't
 // fully filled rest on the book and are re-checked against the house on every tick.
 //
@@ -57,9 +59,14 @@ public class MatchingEngine
         if (!await LockSecurity(order.Symbol))
             throw new OrderValidationException($"Unknown symbol '{order.Symbol}'.");
 
+        // Read after the account lock: a finishing round marks itself FINISHED before it
+        // locks its accounts to cancel their orders, so nothing slips in after the end
+        order.RoundId = await _db.Accounts.Where(a => a.AccountId == accountId).Select(a => a.RoundId).FirstAsync();
+        var rejection = order.RoundId == null ? null : await CheckRoundOpen(order.RoundId.Value);
+
         var tick = await LatestTick(order.Symbol);
         var balances = await GetBalances(accountId, order.Symbol);
-        var rejection = CheckFunds(order, tick, balances);
+        rejection ??= CheckFunds(order, tick, balances);
 
         _db.Orders.Add(order);
         if (rejection != null)
@@ -72,8 +79,8 @@ public class MatchingEngine
         }
         await _db.SaveChangesAsync(); // assigns OrderId
 
-        var resting = await RestingOrders(order.Symbol, Opposite(order.Side), excludeAccountId: accountId);
-        var houseQuantity = await HouseQuantityLeft(tick!, order.Side);
+        var resting = await RestingOrders(order.Symbol, Opposite(order.Side), order.RoundId, excludeAccountId: accountId);
+        var houseQuantity = await HouseQuantityLeft(tick!, order.Side, order.RoundId);
         var book = resting
             .Select(o => new Liquidity(o.OrderId, o.LimitPrice!.Value, o.RemainingQty))
             .Append(new Liquidity(null, tick!.Price, houseQuantity));
@@ -132,18 +139,20 @@ public class MatchingEngine
 
         foreach (var side in new[] { "BUY", "SELL" })
         {
-            var crossed = (await RestingOrders(symbol, side, excludeAccountId: null))
+            var crossedByBook = (await RestingOrders(symbol, side, roundId: null, excludeAccountId: null, allBooks: true))
                 .Where(o => side == "BUY" ? o.LimitPrice >= tick.Price : o.LimitPrice <= tick.Price)
-                .ToList();
-            if (crossed.Count == 0) continue;
+                .GroupBy(o => o.RoundId);
 
-            var houseLeft = await HouseQuantityLeft(tick, side);
-            foreach (var order in crossed)
+            foreach (var book in crossedByBook)
             {
-                if (houseLeft <= 0) break;
-                var qty = Math.Min(order.RemainingQty, houseLeft);
-                houseLeft -= qty;
-                await ApplyFills(order, new[] { (new Fill(null, tick.Price, qty), (Order?)null) }, tick);
+                var houseLeft = await HouseQuantityLeft(tick, side, book.Key);
+                foreach (var order in book)
+                {
+                    if (houseLeft <= 0) break;
+                    var qty = Math.Min(order.RemainingQty, houseLeft);
+                    houseLeft -= qty;
+                    await ApplyFills(order, new[] { (new Fill(null, tick.Price, qty), (Order?)null) }, tick);
+                }
             }
         }
 
@@ -203,6 +212,17 @@ public class MatchingEngine
         return new Order { Symbol = symbol, Side = side, OrderType = type, LimitPrice = limit, Quantity = request.Quantity };
     }
 
+    private async Task<string?> CheckRoundOpen(int roundId)
+    {
+        var round = await _db.Rounds.AsNoTracking().FirstAsync(r => r.RoundId == roundId);
+        return round.Status switch
+        {
+            RoundStatus.Upcoming => $"Round #{roundId} hasn't started yet; trading opens at {round.StartsAt:HH:mm} UTC.",
+            RoundStatus.Finished => $"Round #{roundId} has ended.",
+            _ => null,
+        };
+    }
+
     private static string? CheckFunds(Order order, PriceTick? tick, Balances balances)
     {
         if (tick == null)
@@ -258,11 +278,13 @@ public class MatchingEngine
         return execution;
     }
 
-    // Working limit orders on one side of the book, in priority order
-    private Task<List<Order>> RestingOrders(string symbol, string side, int? excludeAccountId)
+    // Working limit orders on one side of a book (or of every book), in priority order
+    private Task<List<Order>> RestingOrders(string symbol, string side, int? roundId, int? excludeAccountId, bool allBooks = false)
     {
         var working = OrderStatus.Working;
         var query = _db.Orders.Where(o => o.Symbol == symbol && o.Side == side && o.OrderType == "LIMIT" && working.Contains(o.Status));
+        if (!allBooks)
+            query = query.Where(o => o.RoundId == roundId);
         if (excludeAccountId != null)
             query = query.Where(o => o.AccountId != excludeAccountId); // no self-trades
         return (side == "BUY" ? query.OrderByDescending(o => o.LimitPrice) : query.OrderBy(o => o.LimitPrice))
@@ -270,13 +292,13 @@ public class MatchingEngine
             .ToListAsync();
     }
 
-    // How many shares the house will still trade with `side` orders at this tick
-    private async Task<decimal> HouseQuantityLeft(PriceTick tick, string side)
+    // How many shares the house will still trade with `side` orders in one book at this tick
+    private async Task<decimal> HouseQuantityLeft(PriceTick tick, string side, int? roundId)
     {
         var used = await _db.Executions
             .Where(e => e.PriceTickId == tick.PriceTickId)
-            .Join(_db.Orders, e => e.OrderId, o => o.OrderId, (e, o) => new { e.Quantity, o.Side })
-            .Where(x => x.Side == side)
+            .Join(_db.Orders, e => e.OrderId, o => o.OrderId, (e, o) => new { e.Quantity, o.Side, o.RoundId })
+            .Where(x => x.Side == side && x.RoundId == roundId)
             .SumAsync(x => (decimal?)x.Quantity) ?? 0;
         return Math.Max(0, _options.HouseDepth - used);
     }
