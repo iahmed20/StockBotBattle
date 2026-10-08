@@ -17,3 +17,6 @@ obj/
 .vscode/
 *.user
 .DS_Store
+
+# Python bytecode
+__pycache__/

@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -14,10 +13,12 @@ public class StrategyController : ControllerBase
     private const string DefaultName = "strategy.py";
 
     private readonly BrokerageContext _db;
+    private readonly StrategyRunnerService _runner;
 
-    public StrategyController(BrokerageContext db)
+    public StrategyController(BrokerageContext db, StrategyRunnerService runner)
     {
         _db = db;
+        _runner = runner;
     }
 
     public class CodeRequest
@@ -26,7 +27,12 @@ public class StrategyController : ControllerBase
         public string? Note { get; set; } // optional "what I changed"
     }
 
-    private int AccountId => int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+    public class SubmitRequest : CodeRequest
+    {
+        public int? RoundId { get; set; } // run the bot in this round instead of the open market
+    }
+
+    private int AccountId => User.AccountId();
     private string OwnerId => AccountId.ToString();
 
     // The editor works on one strategy per account: the most recently created one that isn't deleted
@@ -47,7 +53,7 @@ public class StrategyController : ControllerBase
         var lastSubmission = await _db.StrategySubmissions
             .Where(s => s.AccountId == AccountId)
             .OrderByDescending(s => s.StrategySubmissionId)
-            .Select(s => new { s.StrategySubmissionId, s.StrategyVersion, s.Status, s.SubmittedAt })
+            .Select(s => new { s.StrategySubmissionId, s.StrategyVersion, s.RoundId, s.Status, s.SubmittedAt, s.StartedAt, s.FinishedAt, s.TicksProcessed, s.LastTickAt, s.Error })
             .FirstOrDefaultAsync();
 
         return Ok(new
@@ -112,19 +118,34 @@ public class StrategyController : ControllerBase
     }
 
     // POST /api/strategy/submit
-    // Saves the code, then queues that exact version for the sandbox runner
+    // Saves the code, then queues that exact version for the sandbox runner; it replaces
+    // any submission of this account that is already running
     [HttpPost("submit")]
-    public async Task<IActionResult> SubmitStrategy([FromBody] CodeRequest request)
+    public async Task<IActionResult> SubmitStrategy([FromBody] SubmitRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Code))
             return BadRequest("Cannot submit an empty strategy.");
         var error = Validate(request);
         if (error != null) return BadRequest(error);
 
+        int? tradingAccountId = null;
+        if (request.RoundId is int roundId)
+        {
+            var entry = await _db.RoundEntries
+                .Where(e => e.RoundId == roundId && e.AccountId == AccountId)
+                .Select(e => new { e.TradingAccountId, e.Round!.Status })
+                .FirstOrDefaultAsync();
+            if (entry == null) return BadRequest($"Join round #{roundId} before submitting a bot to it.");
+            if (entry.Status == RoundStatus.Finished) return Conflict($"Round #{roundId} has ended.");
+            tradingAccountId = entry.TradingAccountId;
+        }
+
         var (strategy, version, _) = await SaveVersion(request);
         var submission = new StrategySubmission
         {
             AccountId = AccountId,
+            TradingAccountId = tradingAccountId,
+            RoundId = request.RoundId,
             StrategyId = strategy.Id,
             StrategyVersion = version.Version
         };
@@ -143,6 +164,7 @@ public class StrategyController : ControllerBase
             AccountId = AccountId,
             Action = "STRATEGY_SUBMITTED",
             Detail = $"Submitted strategy #{submission.StrategySubmissionId} ({strategy.Name} v{version.Version})"
+                + (request.RoundId == null ? "" : $" to round #{request.RoundId}")
         });
         await _db.SaveChangesAsync();
 
@@ -153,9 +175,56 @@ public class StrategyController : ControllerBase
             updatedAt = version.CreatedAt,
             submission.StrategySubmissionId,
             submission.StrategyVersion,
+            submission.RoundId,
             submission.Status,
             submission.SubmittedAt
         });
+    }
+
+    // GET /api/strategy/submissions
+    // Submission history, newest first
+    [HttpGet("submissions")]
+    public async Task<IActionResult> ListSubmissions()
+    {
+        var submissions = await _db.StrategySubmissions
+            .Where(s => s.AccountId == AccountId)
+            .OrderByDescending(s => s.StrategySubmissionId)
+            .Take(50)
+            .Select(s => new { s.StrategySubmissionId, s.StrategyVersion, s.RoundId, s.Status, s.SubmittedAt, s.StartedAt, s.FinishedAt, s.TicksProcessed, s.LastTickAt, s.Error })
+            .ToListAsync();
+        return Ok(submissions);
+    }
+
+    // GET /api/strategy/submissions/7
+    // One submission with the bot's output and the orders it placed
+    [HttpGet("submissions/{id:int}")]
+    public async Task<IActionResult> GetSubmission(int id)
+    {
+        var submission = await _db.StrategySubmissions
+            .Where(s => s.StrategySubmissionId == id && s.AccountId == AccountId)
+            .Select(s => new { s.StrategySubmissionId, s.StrategyVersion, s.RoundId, s.Status, s.SubmittedAt, s.StartedAt, s.FinishedAt, s.TicksProcessed, s.LastTickAt, s.Error, s.Log })
+            .FirstOrDefaultAsync();
+        if (submission == null) return NotFound();
+
+        var orders = await _db.Orders
+            .Where(o => o.StrategySubmissionId == id)
+            .OrderByDescending(o => o.OrderId)
+            .Take(200)
+            .ToListAsync();
+
+        return Ok(new { submission, orders });
+    }
+
+    // POST /api/strategy/submissions/7/stop
+    [HttpPost("submissions/{id:int}/stop")]
+    public async Task<IActionResult> StopSubmission(int id)
+    {
+        if (!await _runner.StopAsync(id, AccountId, "Stopped by user."))
+            return NotFound("No queued or running submission with that id.");
+
+        _db.AuditLogs.Add(new AuditLog { AccountId = AccountId, Action = "STRATEGY_STOP_REQUESTED", Detail = $"Stopped submission #{id}" });
+        await _db.SaveChangesAsync();
+        return NoContent();
     }
 
     private static string? Validate(CodeRequest request)

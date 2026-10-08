@@ -9,12 +9,25 @@ var connectionString = builder.Configuration.GetConnectionString("Brokerage")
 
 builder.Services.AddDbContext<BrokerageContext>(options =>
     options.UseNpgsql(connectionString));
-    
+
 builder.Services.AddControllers();
 builder.Services.AddHostedService<PriceTickerService>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddScoped<MatchingEngine>();
+builder.Services.AddSingleton(builder.Configuration.GetSection("Market").Get<MarketOptions>() ?? new MarketOptions());
+
+// Strategy runner: one Docker sandbox per running submission (see sandbox/ and SandboxOptions)
+builder.Services.AddSingleton(builder.Configuration.GetSection("Sandbox").Get<SandboxOptions>() ?? new SandboxOptions());
+builder.Services.AddSingleton<TickNotifier>();
+builder.Services.AddSingleton<ISandboxLauncher, DockerSandboxLauncher>();
+builder.Services.AddSingleton<StrategyRunnerService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<StrategyRunnerService>());
+
+// Competition rounds, run back to back
+builder.Services.AddSingleton(builder.Configuration.GetSection("Rounds").Get<RoundOptions>() ?? new RoundOptions());
+builder.Services.AddSingleton<RoundService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<RoundService>());
 
 // Magic-link email: real SMTP when Email:Smtp:Host is set, otherwise the link is written to the log
 var smtpOptions = builder.Configuration.GetSection("Email:Smtp").Get<SmtpOptions>();
@@ -61,7 +74,6 @@ builder.Services.AddCors(options =>
                       });
 });
 
-builder.Services.AddControllers();
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
@@ -115,3 +127,5 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.Run();
+
+public partial class Program { } // lets integration tests reference the app

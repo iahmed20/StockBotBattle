@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -10,9 +11,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace BrokeragePlatform.Migrations
 {
     [DbContext(typeof(BrokerageContext))]
-    partial class BrokerageContextModelSnapshot : ModelSnapshot
+    [Migration("20261008203340_SubmissionTickProgress")]
+    partial class SubmissionTickProgress
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -38,9 +41,6 @@ namespace BrokeragePlatform.Migrations
                     b.Property<string>("OwnerName")
                         .IsRequired()
                         .HasColumnType("text");
-
-                    b.Property<int?>("RoundId")
-                        .HasColumnType("integer");
 
                     b.HasKey("AccountId");
 
@@ -214,9 +214,6 @@ namespace BrokeragePlatform.Migrations
                     b.Property<decimal>("QuantityFilled")
                         .HasColumnType("decimal(18,4)");
 
-                    b.Property<int?>("RoundId")
-                        .HasColumnType("integer");
-
                     b.Property<string>("Side")
                         .IsRequired()
                         .HasColumnType("text");
@@ -270,75 +267,6 @@ namespace BrokeragePlatform.Migrations
                     b.HasIndex("Symbol", "PriceTickId");
 
                     b.ToTable("PriceTicks");
-                });
-
-            modelBuilder.Entity("Round", b =>
-                {
-                    b.Property<int>("RoundId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("RoundId"));
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTime>("EndsAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<decimal>("StartingCash")
-                        .HasColumnType("decimal(18,4)");
-
-                    b.Property<DateTime>("StartsAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)");
-
-                    b.HasKey("RoundId");
-
-                    b.HasIndex("Status");
-
-                    b.ToTable("Rounds");
-                });
-
-            modelBuilder.Entity("RoundEntry", b =>
-                {
-                    b.Property<int>("RoundEntryId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("RoundEntryId"));
-
-                    b.Property<int>("AccountId")
-                        .HasColumnType("integer");
-
-                    b.Property<decimal?>("FinalEquity")
-                        .HasColumnType("decimal(18,4)");
-
-                    b.Property<int?>("FinalRank")
-                        .HasColumnType("integer");
-
-                    b.Property<DateTime>("JoinedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<int>("RoundId")
-                        .HasColumnType("integer");
-
-                    b.Property<int>("TradingAccountId")
-                        .HasColumnType("integer");
-
-                    b.HasKey("RoundEntryId");
-
-                    b.HasIndex("TradingAccountId")
-                        .IsUnique();
-
-                    b.HasIndex("RoundId", "AccountId")
-                        .IsUnique();
-
-                    b.ToTable("RoundEntries");
                 });
 
             modelBuilder.Entity("Security", b =>
@@ -422,9 +350,6 @@ namespace BrokeragePlatform.Migrations
                     b.Property<string>("Log")
                         .HasColumnType("text");
 
-                    b.Property<int?>("RoundId")
-                        .HasColumnType("integer");
-
                     b.Property<DateTime?>("StartedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -443,9 +368,6 @@ namespace BrokeragePlatform.Migrations
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<int>("TicksProcessed")
-                        .HasColumnType("integer");
-
-                    b.Property<int?>("TradingAccountId")
                         .HasColumnType("integer");
 
                     b.HasKey("StrategySubmissionId");
@@ -483,17 +405,6 @@ namespace BrokeragePlatform.Migrations
                     b.ToTable("StrategyVersions");
                 });
 
-            modelBuilder.Entity("RoundEntry", b =>
-                {
-                    b.HasOne("Round", "Round")
-                        .WithMany("Entries")
-                        .HasForeignKey("RoundId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Round");
-                });
-
             modelBuilder.Entity("StrategySubmission", b =>
                 {
                     b.HasOne("StrategyVersion", "Version")
@@ -514,11 +425,6 @@ namespace BrokeragePlatform.Migrations
                         .IsRequired();
 
                     b.Navigation("Strategy");
-                });
-
-            modelBuilder.Entity("Round", b =>
-                {
-                    b.Navigation("Entries");
                 });
 
             modelBuilder.Entity("Strategy", b =>
