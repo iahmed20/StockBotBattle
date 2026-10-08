@@ -5,15 +5,17 @@ public class PriceTickerService : BackgroundService
 {
     private readonly IServiceProvider _services;
     private readonly ILogger<PriceTickerService> _logger;
+    private readonly TickNotifier _ticks;
     private readonly Random _random = new();
 
     // Each tick simulates one trading day, so annualized drift/volatility apply with dt = 1/252
     private const double Dt = 1.0 / 252.0;
 
-    public PriceTickerService(IServiceProvider services, ILogger<PriceTickerService> logger)
+    public PriceTickerService(IServiceProvider services, ILogger<PriceTickerService> logger, TickNotifier ticks)
     {
         _services = services;
         _logger = logger;
+        _ticks = ticks;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -61,6 +63,8 @@ public class PriceTickerService : BackgroundService
                     }
                 }
             }
+
+            _ticks.Publish(); // running strategies react to the new prices
 
             await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
         }

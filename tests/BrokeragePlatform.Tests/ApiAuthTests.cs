@@ -79,6 +79,8 @@ public class ApiAuthTests : IClassFixture<ApiAuthTests.Fixture>
     [InlineData("DELETE", "/api/orders/1")]
     [InlineData("GET", "/api/accounts/1")]
     [InlineData("POST", "/api/accounts/1/deposit")]
+    [InlineData("GET", "/api/strategy/submissions")]
+    [InlineData("POST", "/api/strategy/submissions/1/stop")]
     public async Task Trading_endpoints_require_sign_in(string method, string url)
     {
         var client = _factory.CreateClient();

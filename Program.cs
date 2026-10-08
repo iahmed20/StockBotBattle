@@ -17,6 +17,13 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddScoped<MatchingEngine>();
 builder.Services.AddSingleton(builder.Configuration.GetSection("Market").Get<MarketOptions>() ?? new MarketOptions());
 
+// Strategy runner: one Docker sandbox per running submission (see sandbox/ and SandboxOptions)
+builder.Services.AddSingleton(builder.Configuration.GetSection("Sandbox").Get<SandboxOptions>() ?? new SandboxOptions());
+builder.Services.AddSingleton<TickNotifier>();
+builder.Services.AddSingleton<ISandboxLauncher, DockerSandboxLauncher>();
+builder.Services.AddSingleton<StrategyRunnerService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<StrategyRunnerService>());
+
 // Magic-link email: real SMTP when Email:Smtp:Host is set, otherwise the link is written to the log
 var smtpOptions = builder.Configuration.GetSection("Email:Smtp").Get<SmtpOptions>();
 if (!string.IsNullOrWhiteSpace(smtpOptions?.Host))

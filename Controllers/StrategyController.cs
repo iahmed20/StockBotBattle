@@ -13,10 +13,12 @@ public class StrategyController : ControllerBase
     private const string DefaultName = "strategy.py";
 
     private readonly BrokerageContext _db;
+    private readonly StrategyRunnerService _runner;
 
-    public StrategyController(BrokerageContext db)
+    public StrategyController(BrokerageContext db, StrategyRunnerService runner)
     {
         _db = db;
+        _runner = runner;
     }
 
     public class CodeRequest
@@ -46,7 +48,7 @@ public class StrategyController : ControllerBase
         var lastSubmission = await _db.StrategySubmissions
             .Where(s => s.AccountId == AccountId)
             .OrderByDescending(s => s.StrategySubmissionId)
-            .Select(s => new { s.StrategySubmissionId, s.StrategyVersion, s.Status, s.SubmittedAt })
+            .Select(s => new { s.StrategySubmissionId, s.StrategyVersion, s.Status, s.SubmittedAt, s.StartedAt, s.FinishedAt, s.Error })
             .FirstOrDefaultAsync();
 
         return Ok(new
@@ -111,7 +113,8 @@ public class StrategyController : ControllerBase
     }
 
     // POST /api/strategy/submit
-    // Saves the code, then queues that exact version for the sandbox runner
+    // Saves the code, then queues that exact version for the sandbox runner; it replaces
+    // any submission of this account that is already running
     [HttpPost("submit")]
     public async Task<IActionResult> SubmitStrategy([FromBody] CodeRequest request)
     {
@@ -155,6 +158,52 @@ public class StrategyController : ControllerBase
             submission.Status,
             submission.SubmittedAt
         });
+    }
+
+    // GET /api/strategy/submissions
+    // Submission history, newest first
+    [HttpGet("submissions")]
+    public async Task<IActionResult> ListSubmissions()
+    {
+        var submissions = await _db.StrategySubmissions
+            .Where(s => s.AccountId == AccountId)
+            .OrderByDescending(s => s.StrategySubmissionId)
+            .Take(50)
+            .Select(s => new { s.StrategySubmissionId, s.StrategyVersion, s.Status, s.SubmittedAt, s.StartedAt, s.FinishedAt, s.Error })
+            .ToListAsync();
+        return Ok(submissions);
+    }
+
+    // GET /api/strategy/submissions/7
+    // One submission with the bot's output and the orders it placed
+    [HttpGet("submissions/{id:int}")]
+    public async Task<IActionResult> GetSubmission(int id)
+    {
+        var submission = await _db.StrategySubmissions
+            .Where(s => s.StrategySubmissionId == id && s.AccountId == AccountId)
+            .Select(s => new { s.StrategySubmissionId, s.StrategyVersion, s.Status, s.SubmittedAt, s.StartedAt, s.FinishedAt, s.Error, s.Log })
+            .FirstOrDefaultAsync();
+        if (submission == null) return NotFound();
+
+        var orders = await _db.Orders
+            .Where(o => o.StrategySubmissionId == id)
+            .OrderByDescending(o => o.OrderId)
+            .Take(200)
+            .ToListAsync();
+
+        return Ok(new { submission, orders });
+    }
+
+    // POST /api/strategy/submissions/7/stop
+    [HttpPost("submissions/{id:int}/stop")]
+    public async Task<IActionResult> StopSubmission(int id)
+    {
+        if (!await _runner.StopAsync(id, AccountId, "Stopped by user."))
+            return NotFound("No queued or running submission with that id.");
+
+        _db.AuditLogs.Add(new AuditLog { AccountId = AccountId, Action = "STRATEGY_STOP_REQUESTED", Detail = $"Stopped submission #{id}" });
+        await _db.SaveChangesAsync();
+        return NoContent();
     }
 
     private static string? Validate(CodeRequest request)
