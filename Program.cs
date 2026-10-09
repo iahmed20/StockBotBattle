@@ -90,11 +90,11 @@ using (var scope = app.Services.CreateScope())
     if (!db.Securities.Any())
     {
         db.Securities.AddRange(
-            new Security { Symbol = "NEKO", Name = "Neko Corp", Drift = 0.08, Volatility = 0.20 },
-            new Security { Symbol = "PAWS", Name = "Paws & Co", Drift = 0.05, Volatility = 0.15 },
-            new Security { Symbol = "MEOW", Name = "Meow Industries", Drift = 0.12, Volatility = 0.35 },
-            new Security { Symbol = "TUNA", Name = "Tuna Holdings", Drift = 0.03, Volatility = 0.10 },
-            new Security { Symbol = "YARN", Name = "Yarn Dynamics", Drift = -0.02, Volatility = 0.50 }
+            new Security { Symbol = "ACME", Name = "Acme Corp", Drift = 0.08, Volatility = 0.20 },
+            new Security { Symbol = "GLBX", Name = "Globex Industries", Drift = 0.05, Volatility = 0.15 },
+            new Security { Symbol = "NOVT", Name = "Nova Tech", Drift = 0.12, Volatility = 0.35 },
+            new Security { Symbol = "KPWR", Name = "Keystone Power", Drift = 0.03, Volatility = 0.10 },
+            new Security { Symbol = "ZBIO", Name = "Zenith Biotech", Drift = -0.02, Volatility = 0.50 }
         );
         db.SaveChanges();
     }
