@@ -2,7 +2,11 @@
 
 A multiplayer stock market for writing Python trading bots. Five fictional stocks move on a live price feed, and players compete in timed rounds: everyone starts with the same cash, bots trade against each other and a house market maker, and a live leaderboard ranks the results. Bots run in locked-down Docker sandboxes, and every trade lands in an append-only ledger. Inspired by trading competitions like IMC Prosperity.
 
-![Stock Bot Battle workspace: candlestick chart, strategy editor with a running bot, and the round leaderboard](docs/screenshots/workspace.png)
+
+<img width="1029" height="763" alt="Screenshot 2026-10-08 at 3 52 22 PM" src="https://github.com/user-attachments/assets/94fb2e35-13a5-4e2a-8346-e38b60b40895" />
+
+<img width="1093" height="871" alt="Screenshot 2026-10-08 at 4 07 36 PM" src="https://github.com/user-attachments/assets/a510a8c7-5c5e-4f1e-9eed-56e4a2a78e0c" />
+
 
 **Frontend repo:** [iahmed20/vite-frontend](https://github.com/iahmed20/vite-frontend)
 
