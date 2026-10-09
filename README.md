@@ -1,6 +1,6 @@
 # Stock Bot Battle
 
-A multiplayer stock market for writing Python trading bots. Five fictional, cat-themed stocks move on a live price feed, and players compete in timed rounds: everyone starts with the same cash, bots trade against each other and a house market maker, and a live leaderboard ranks the results. Bots run in locked-down Docker sandboxes, and every trade lands in an append-only ledger. Inspired by trading competitions like IMC Prosperity.
+A multiplayer stock market for writing Python trading bots. Five fictional stocks move on a live price feed, and players compete in timed rounds: everyone starts with the same cash, bots trade against each other and a house market maker, and a live leaderboard ranks the results. Bots run in locked-down Docker sandboxes, and every trade lands in an append-only ledger. Inspired by trading competitions like IMC Prosperity.
 
 
 <img width="1029" height="763" alt="Screenshot 2026-10-08 at 3 52 22 PM" src="https://github.com/user-attachments/assets/94fb2e35-13a5-4e2a-8346-e38b60b40895" />
@@ -24,12 +24,23 @@ A multiplayer stock market for writing Python trading bots. Five fictional, cat-
 ## What you can do
 
 1. **Sign in with your email.** No password. You get a single-use link that expires after 15 minutes.
+
+   <img src="docs/screenshots/login.png" alt="Sign-in form with name and email fields" width="400">
+
 2. **Add cash.** Accounts start empty. Use the **Deposit** button in the toolbar, which also shows your available cash and positions.
-3. **Watch the market.** NEKO, PAWS, MEOW, TUNA, and YARN tick every 10 seconds. The chart groups ticks into 1m, 5m, 15m, or 1h candles.
+
+   <img src="docs/screenshots/deposit.png" alt="Deposit menu showing amount field, quick-add buttons, and cash balance" width="600">
+
+3. **Watch the market.** ACME, GLBX, NOVT, KPWR, and ZBIO tick every 10 seconds. The chart groups ticks into 1m, 5m, 15m, or 1h candles.
 4. **Write a bot.** The editor next to the chart saves every change as a numbered version.
 5. **Join a round.** Rounds run back to back: 30 minutes each, with a 2-minute break between them. Click **Join** in the Competition panel under the editor to get a separate round account with $100,000.
 6. **Submit your bot to the round.** Pick the round under **Run in** next to Submit. If the round hasn't started, the bot waits and starts automatically. The run panel under the editor shows its status, a tick counter, the orders it placed, and everything it prints. Submitting again replaces the running bot, and **Stop** ends it.
+
+   The workspace screenshot at the top shows a bot running in Round #1: the run panel lists each decision it prints, and the toolbar counts down the round.
+
 7. **Climb the leaderboard.** Players are ranked live by equity: cash plus shares at the latest price. When the round ends, open orders are cancelled, bots stop, and the final standings are saved.
+
+   ![Competition panel with the live round, the next round's Join button, and the leaderboard](docs/screenshots/leaderboard.png)
 
 You can also run a bot in the **open market**, outside any round, with your own account and deposits. Open-market results don't count toward any leaderboard.
 
@@ -96,8 +107,8 @@ A strategy is a Python file that defines `on_tick`. On every price tick, the run
 from datamodel import Order, State
 
 def on_tick(symbol: str, price: float, state: State):
-    if symbol == "NEKO" and state.positions.get("NEKO", 0) == 0:
-        return Order.buy("NEKO", 10)   # buy 10 shares at market
+    if symbol == "ACME" and state.positions.get("ACME", 0) == 0:
+        return Order.buy("ACME", 10)   # buy 10 shares at market
 ```
 
 > **Replace the template; don't paste inside it.** Your code should start at the left margin. If you paste a strategy inside the editor's starter `def on_tick(...)`, Python either rejects the indentation or runs the outer function, which never calls yours, so the bot runs but never trades.
@@ -277,7 +288,7 @@ Example, after signing in with `curl -c cookies.txt`:
 ```bash
 curl -X POST http://localhost:5078/api/orders -b cookies.txt \
   -H "Content-Type: application/json" \
-  -d '{"symbol": "MEOW", "side": "BUY", "orderType": "LIMIT", "limitPrice": 95.50, "quantity": 10}'
+  -d '{"symbol": "NOVT", "side": "BUY", "orderType": "LIMIT", "limitPrice": 95.50, "quantity": 10}'
 ```
 
 ## Configuration
